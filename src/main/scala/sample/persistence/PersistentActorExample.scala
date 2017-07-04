@@ -3,14 +3,32 @@ package sample.persistence
 //#persistent-actor-example
 import akka.actor._
 import akka.persistence._
+import akka.persistence.journal.{Tagged, WriteEventAdapter}
 
 case class Cmd(data: String)
-case class Evt(data: String)
+
+sealed trait Event {
+  def data: String
+}
+case class Evt(data: String) extends Event
+case class EventFailed(data: String) extends Event
 
 case class ExampleState(events: List[String] = Nil) {
-  def updated(evt: Evt): ExampleState = copy(evt.data :: events)
+  def updated(evt: Event): ExampleState = copy(evt.data :: events)
   def size: Int = events.length
   override def toString: String = events.reverse.toString
+}
+
+class JournalTagging(system: ExtendedActorSystem)
+  extends WriteEventAdapter {
+
+  override def manifest(event: Any): String = ""
+
+  override def toJournal(event: Any): Any = event match {
+    case e: Evt => Tagged(e, Set("eventEmitted"))
+    case e: EventFailed => Tagged(e, Set("eventFailed"))
+    case other => other
+  }
 }
 
 class ExamplePersistentActor extends PersistentActor {
@@ -18,21 +36,21 @@ class ExamplePersistentActor extends PersistentActor {
 
   var state = ExampleState()
 
-  def updateState(event: Evt): Unit =
+  def updateState(event: Event): Unit =
     state = state.updated(event)
 
   def numEvents =
     state.size
 
   val receiveRecover: Receive = {
-    case evt: Evt                                 => updateState(evt)
+    case evt: Event                                 => updateState(evt)
     case SnapshotOffer(_, snapshot: ExampleState) => state = snapshot
   }
 
   val receiveCommand: Receive = {
     case Cmd(data) =>
       persist(Evt(s"${data}-${numEvents}"))(updateState)
-      persist(Evt(s"${data}-${numEvents + 1}")) { event =>
+      persist(EventFailed(s"${data}-${numEvents + 1}")) { event =>
         updateState(event)
         context.system.eventStream.publish(event)
       }
